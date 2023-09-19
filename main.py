@@ -7,6 +7,7 @@ import openai
 import sys
 import io
 import os
+import json
 from pprint import pprint
 
 from trainer import Trainer, TrainerArgs
@@ -49,8 +50,7 @@ def main():
     # Code Source: https://medium.com/@zahrizhalali/crafting-your-custom-text-to-speech-model-f151b0c9cba2
     # Credit to Zahrizhal Ali for pointing us in the direction of Coqui TTS. 
 
-    dataset_config = BaseDatasetConfig(
-        formatter="ljspeech", meta_file_train="../transcript.txt", path=os.path.join(os.getcwd(), "dataset/training/"))
+    dataset_config = BaseDatasetConfig(meta_file_train="../transcript.txt", path=os.path.join(os.getcwd(), "dataset/training/"))
 
     audio_config = BaseAudioConfig()
 
@@ -68,7 +68,7 @@ def main():
         'power': 1.5,            # Change this value and listen to the synthesized voice. 1.2 - 1.5 are resonable values.
         'griffin_lim_iters': 60, # Quality does not improve for values > 60
         'mel_fmin': 0.0,         # Adjust this and check mel-spectrogram-based voice synthesis below.
-        'mel_fmax': 0.85,      # Adjust this and check mel-spectrogram-based voice synthesis below.
+        'mel_fmax': None,      # Adjust this and check mel-spectrogram-based voice synthesis below.
         'do_trim_silence': True  # If you dataset has some silience at the beginning or end, this trims it. Check the AP.load_wav() below,if it causes any difference for the loaded audio file.
     }
 
@@ -87,8 +87,6 @@ def main():
     tuned_config.update(reset)
     tuned_config.update(tune_params)
 
-    
-
     #audio_config = VitsAudioConfig(
     #    sample_rate=44100, win_length=1024, hop_length=256, num_mels=80, mel_fmin=0, mel_fmax=8000.00, preemphasis=0.95, rel_level_db=5
     #)
@@ -106,7 +104,7 @@ def main():
     config = VitsConfig(
         audio=audio_config,
         characters=character_config,
-        run_name="vits_vctk",
+        run_name="RN",
         batch_size=16,
         eval_batch_size=4,
         eval_split_size=0.25,
@@ -114,7 +112,7 @@ def main():
         num_eval_loader_workers=4,
         run_eval=True,
         test_delay_epochs=0,
-        epochs=10,
+        epochs=1,
         text_cleaner="basic_cleaners",
         use_phonemes=False,
         phoneme_language="en-us",
@@ -128,7 +126,6 @@ def main():
         mixed_precision=False,
         max_text_len=250,  # change this if you have a larger VRAM than 16GB
         output_path=os.getcwd(),
-        datasets=[dataset_config],
         cudnn_benchmark=False,
         test_sentences=[
             ["These folks are good people... they deserve the same as the rest of us."],
@@ -145,6 +142,7 @@ def main():
     # Tokenizer is used to convert text to sequences of token IDs.
     # config is updated with the default characters if not defined in the config.
     tokenizer, config = TTSTokenizer.init_from_config(config)
+
 
     train_samples, eval_samples = load_tts_samples(dataset_config, 
                                                     eval_split=True, 
@@ -182,6 +180,10 @@ def formatter(root_path, manifest_file, **kwargs):  # pylint: disable=unused-arg
             text = cols[1].replace('\n', '')
             # print(text)
             items.append({"text":text, "audio_file":wav_file, "speaker_name":speaker_name, "root_path": root_path, "language": "eng"})
+    pprint(items)
+    #with open("config.json", "w") as outfile:
+    #    json.dump(items, outfile, indent=4, sort_keys=True)
+    #    outfile.close()
     return items
 
 

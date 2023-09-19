@@ -20,9 +20,10 @@ def infer(m, c):
 
     wav = synth.tts(
 	    "Ask not what your country can do for you. Ask what you can do for your country.",
+        reference_speaker_name="RN"
     )
     
-    synth.save_wav(wav, "output.wav")
+    synth.save_wav(wav, "output_infer.wav")
     
 # python3 infer.py /path/to/model /path/to/config
 
