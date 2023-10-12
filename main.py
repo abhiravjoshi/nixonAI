@@ -8,6 +8,7 @@ import sys
 import io
 import os
 import json
+import torch
 from pprint import pprint
 
 from trainer import Trainer, TrainerArgs
@@ -24,6 +25,145 @@ from TTS.config.shared_configs import BaseAudioConfig
 API_KEY = None
 
 def main():
+    dataset_config = BaseDatasetConfig(meta_file_train="../transcript.txt", path=os.path.join(os.getcwd(), "dataset/training/"))
+
+    audio_config = BaseAudioConfig()
+
+    tune_params={
+        'num_mels': 80,          # In general, you don't need to change this. 
+        'fft_size': 2400,        # In general, you don't need to change this.
+        'frame_length_ms': 50, 
+        'frame_shift_ms': 12.5,
+        'sample_rate': 44100,    # This must match the sample rate of the dataset.
+        'hop_length': 256,       # In general, you don't need to change this.
+        'win_length': 1024,      # In general, you don't need to change this.
+        'preemphasis': 0.97,     # In general, 0 gives better voice recovery but makes training harder. If your model does not train, try 0.97 - 0.99.
+        'min_level_db': -100,
+        'ref_level_db': 5,       # The base DB; increase until all background noise is removed in the spectrogram, then lower until you hear better speech below.
+        'power': 1.5,            # Change this value and listen to the synthesized voice. 1.2 - 1.5 are resonable values.
+        'griffin_lim_iters': 60, # Quality does not improve for values > 60
+        'mel_fmin': 0.0,         # Adjust this and check mel-spectrogram-based voice synthesis below.
+        'mel_fmax': None,      # Adjust this and check mel-spectrogram-based voice synthesis below.
+        'do_trim_silence': True  # If you dataset has some silience at the beginning or end, this trims it. Check the AP.load_wav() below,if it causes any difference for the loaded audio file.
+    }
+
+    # These options have to be forced off in order to avoid errors about the 
+    # pre-calculated not matching the options being tuned.
+    reset={
+        'signal_norm': True,  # check this if you want to test normalization parameters.
+        'stats_path': None,
+        'symmetric_norm': False,
+        'max_norm': 1,
+        'clip_norm': True,
+    }
+
+    # Override select parts of loaded config with parameters above
+    tuned_config = audio_config.copy()
+    tuned_config.update(reset)
+    tuned_config.update(tune_params)
+
+    #audio_config = VitsAudioConfig(
+    #    sample_rate=44100, win_length=1024, hop_length=256, num_mels=80, mel_fmin=0, mel_fmax=8000.00, preemphasis=0.95, rel_level_db=5
+    #)
+
+    
+
+    character_config = CharactersConfig(
+        characters_class= "TTS.tts.models.vits.VitsCharacters",
+        characters= "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890",
+        punctuations=" !,.?-'",
+        pad= "<PAD>",
+        eos= "<EOS>",
+        bos= "<BOS>",
+        blank= "<BLNK>",
+    )
+
+    config = VitsConfig(
+        audio=audio_config,
+        characters=character_config,
+        run_name="RN",
+        batch_size=16,
+        eval_batch_size=4,
+        eval_split_size=0.25,
+        num_loader_workers=4,
+        num_eval_loader_workers=4,
+        run_eval=True,
+        test_delay_epochs=0,
+        epochs=5,
+        text_cleaner="basic_cleaners",
+        use_phonemes=False,
+        phoneme_language="en-us",
+        phoneme_cache_path=os.path.join(os.getcwd(), "phoneme_cache/"),
+        compute_input_seq_cache=True,
+        print_step=25,
+        print_eval=False,
+        save_best_after=10,
+        save_checkpoints=True,
+        save_all_best=True,
+        mixed_precision=False,
+        max_text_len=250,  # change this if you have a larger VRAM than 16GB
+        output_path=os.getcwd(),
+        cudnn_benchmark=False,
+        test_sentences=[
+            ["These folks are good people... they deserve the same as the rest of us."],
+            ["I'm a fighter, Pat. And I'll always be one."]
+        ],
+        
+    )
+
+    # Audio processor is used for feature extraction and audio I/O.
+    ap = AudioProcessor(**tuned_config)
+
+    # INITIALIZE THE TOKENIZER
+    tokenizer, _ = TTSTokenizer.init_from_config(config)
+
+    # Load the pre-trained model
+    model = Vits(config, ap, tokenizer, speaker_manager=None)
+    checkpoint_path = "XTTS-v1/model.pth"
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+    model.load_state_dict(checkpoint['model'], strict=False)
+
+    # Synthesize Audio using the Pre-trained Model
+    test_sentences = [
+        "These folks are good people... they deserve the same as the rest of us.",
+        "I'm a fighter, Pat. And I'll always be one."
+    ]
+
+    model.eval()  # set the model to evaluation mode
+    with torch.no_grad():
+        for idx, sentence in enumerate(test_sentences):
+            sequence = tokenizer.text_to_ids(sentence)
+            sequence = torch.LongTensor(sequence).unsqueeze(0)  # (1, T)
+            
+            # Forward pass through the model
+            outputs = model.inference(sequence)
+
+            print()
+            print("outputs.keys() = ", outputs.keys())
+            print()
+            print("outputs['model_outputs'].shape = ", outputs["model_outputs"].shape)
+            output_spectrogram = outputs['model_outputs'].squeeze(1)
+            print()
+            print(output_spectrogram)
+            print()
+            print(torch.min(output_spectrogram), torch.max(output_spectrogram), torch.mean(output_spectrogram))
+            print()
+            print("outputs['model_outputs'] = ", outputs['model_outputs'])
+            print()
+            corrected_output = outputs["model_outputs"].squeeze().T
+            print("corrected_output.shape ",corrected_output)
+            print()
+            # Convert the model outputs to waveform
+            # waveform = ap.inv_melspectrogram(outputs["mel_outputs_postnet"].detach().cpu().numpy()[0])
+            # waveform = ap.inv_melspectrogram(outputs["model_outputs"].detach().cpu().numpy()[0])
+            waveform = ap.inv_melspectrogram(corrected_output.detach().cpu().numpy()[0])
+            
+
+            # Save the audio
+            ap.save_wav(waveform, f"test_sentence_{idx}_pre-trained_output.wav")
+
+
+def main2():
     
     # commented below so OpenAI doesn't charge us every time we run this script
     '''
@@ -112,7 +252,7 @@ def main():
         num_eval_loader_workers=4,
         run_eval=True,
         test_delay_epochs=0,
-        epochs=1,
+        epochs=5,
         text_cleaner="basic_cleaners",
         use_phonemes=False,
         phoneme_language="en-us",
@@ -154,17 +294,56 @@ def main():
     # init model
     model = Vits(config, ap, tokenizer, speaker_manager=None)
 
+    '''
+    # Load the pre-trained model
+    checkpoint_path = "XTTS-v1/model.pth"
+    model = torch.nn.DataParallel(model)
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+    model.load_state_dict(checkpoint['model'], strict=False)
+    # model.load_state_dict(checkpoint['state_dict'], strict=False)
+
+    '''
+
+    # Load the pre-trained model
+    model = Vits(config, ap, tokenizer, speaker_manager=None)
+    checkpoint_path = "XTTS-v1/model.pth"
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+    model.load_state_dict(checkpoint['model'], strict=False)
+    
+    '''
     # init the trainer and 🚀
     trainer = Trainer(
         TrainerArgs(),
         config,
         os.path.join(os.getcwd(), "output/"),
-        model=model,
+        model=model.module,
         train_samples=train_samples,
         eval_samples=eval_samples,
     )
 
     trainer.fit()
+    '''
+    # Synthesize Audio using the Pre-trained Model
+    test_sentences = [
+        "These folks are good people... they deserve the same as the rest of us.",
+        "I'm a fighter, Pat. And I'll always be one."
+    ]
+
+
+    model.eval()  # set the model to evaluation mode
+    with torch.no_grad():
+        for sentence in test_sentences:
+            sequence = tokenizer.text_to_ids(sentence)
+            sequence = torch.LongTensor(sequence).unsqueeze(0)  # (1, T)
+            
+            # Forward pass through the model
+            outputs = model.inference(sequence)
+
+            # Convert the model outputs to waveform
+            waveform = ap.inv_melspectrogram(outputs["mel_outputs_postnet"].detach().cpu().numpy())
+            
+            # Save or play the audio
+            ap.save_wav(waveform, f"test_sentence_pre-trained_output.wav")
 
 def formatter(root_path, manifest_file, **kwargs):  # pylint: disable=unused-argument
     """Assumes each line as ```<filename>|<transcription>```
